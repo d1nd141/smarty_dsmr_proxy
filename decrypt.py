@@ -1,6 +1,7 @@
 import serial
 import binascii
 import argparse
+import paho.mqtt.client as mqtt
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers import (Cipher, algorithms, modes)
@@ -34,6 +35,12 @@ class SmartyProxy():
         # All input has been read. After this, we switch back to STATE_IGNORING and wait for a new start byte.
         self.STATE_DONE = 10
 
+        self.mqtt_topic = "TOPIC"
+        self.mqtt_host = "MQTT_SERVER"
+        self.mqtt_port = 1883
+        self.mqtt_username = "USERNAME"
+        self.mqtt_password = "PASSWORD"
+
         # Command line arguments
         self._args = {}
 
@@ -53,6 +60,20 @@ class SmartyProxy():
         self._frame_counter = b""
         self._payload = b""
         self._gcm_tag = b""
+        self.client = mqtt.Client(client_id="smarty",clean_session=False)
+
+    # The callback for when the client receives a CONNACK response from the server.
+    def on_connect(client, userdata, flags, rc):
+        print("Connected with result code "+str(rc))
+
+        # Subscribing in on_connect() means that if we lose the connection and
+        # reconnect then subscriptions will be renewed.
+        client.subscribe("$SYS/#")
+
+    # The callback for when a PUBLISH message is received from the server.
+    def on_message(client, userdata, msg):
+        print(msg.topic+" "+str(msg.payload))
+
 
     def main(self):
         parser = argparse.ArgumentParser()
@@ -60,6 +81,12 @@ class SmartyProxy():
         parser.add_argument('-i', '--serial-input-port', required=False, default="/dev/ttyUSB0", help="Input port. Defaults to /dev/ttyUSB0.")
         parser.add_argument('-o', '--serial-output-port', required=False, help="Output port, e.g. /dev/pts/2.")
         self._args = parser.parse_args()
+#        client.on_connect = on_connect
+#        client.on_message = on_message
+        self.client.username_pw_set(self.mqtt_username, password=self.mqtt_password)
+        self.client.connect(self.mqtt_host, self.mqtt_port, 60)
+        self.client.publish(self.mqtt_topic, "startup")
+
 
         self.connect()
         while True:
@@ -195,7 +222,24 @@ class SmartyProxy():
                 gcm_tag
             )
             print(decryption)
-
+            tempstring=decryption.decode()
+            temparray = tempstring.split("\r\n\r\n")
+            i=0
+            for item in temparray:
+                if i > 0:
+                    temparray2=item.split("\r\n")
+                    for item2 in temparray2:
+                        if item2.rfind(":") > 0:
+                            item2=item2.split(":")[1]
+                            name=item2.split("(")[0]
+                            value=item2.split("(")[1]
+                            value=value.replace("(","")
+                            value=value.replace(")","")
+                            if value.rfind("*") > 0:
+                                value=value.split("*")[0]
+                            if len(value) > 0:
+                                self.write_to_mqtt(name,value)
+                i+=1
             if self._args.serial_output_port:
                 self.write_to_serial_port(decryption)
         except InvalidTag:
@@ -224,6 +268,8 @@ class SmartyProxy():
         ser.write(decryption)
         ser.close()
 
+    def write_to_mqtt(self, topic, decryption):
+        self.client.publish(topic=self.mqtt_topic+topic, payload=decryption,retain=True)
 
 if __name__ == '__main__':
     smarty_proxy = SmartyProxy()
